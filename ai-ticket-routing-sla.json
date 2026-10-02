@@ -1,0 +1,807 @@
+{
+  "name": "AI Ticket Routing + SLA + Escalation (Module 5)",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "q": "is:unread newer_than:1d"
+        },
+        "options": {}
+      },
+      "id": "c094420b-5dac-4ca7-9735-0466d77fd073",
+      "name": "Gmail Trigger (every 1m)",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1152,
+        544
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "YOUR gmailOAuth2 CREDENTIAL"
+        }
+      },
+      "notes": "Кожну хвилину перевіряє непрочитані листи за останню добу. Це джерело тікетів. Замість Gmail можна підключити Helpdesk webhook, Typeform, форму на сайті — логіка далі та сама."
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "522b6cb9-ec2b-43a1-91eb-deaf5ac7c8d2",
+      "name": "Collect Ticket Context",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [
+        -928,
+        544
+      ],
+      "notes": "Збирає вхідний лист у плоский об'єкт ticket: id, from, subject, body, timestamp, link. Далі весь pipeline працює з цими полями."
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Тікет від клієнта:\n\nFrom: {{ $json.from_email }}\nSubject: {{ $json.subject }}\nBody:\n{{ $json.body }}",
+        "options": {
+          "systemMessage": "You are a senior customer support coordinator for BRO BARBERSHOP, a barbershop chain with 4 locations. Your task is to classify an incoming ticket and assign it a priority.\n\nCATEGORIES:\n- booking: appointment scheduling, rescheduling, cancellation, slot availability\n- complaint: complaint about haircut quality, staff rudeness, lateness\n- pricing_services: questions about prices, services, promotions, franchise\n- b2b_partnership: partnership inquiries, wholesale product orders, corporate clients\n- spam: advertising, bots, irrelevant content\n\nPRIORITIES:\n- P1 (15 min): complaint about rudeness/poor haircut quality + signs of threatening to switch to a competitor\n- P2 (120 min): urgent change/cancellation of an appointment scheduled for today\n- P3 (1440 min): regular future booking, standard questions about prices/services\n- P4 (2880 min): general questions, franchise inquiries, non-urgent b2b\n\nDEFAULT OWNERS:\n- booking → booking_manager\n- complaint → complaint_lead\n- pricing_services → sales_lead\n- b2b_partnership → partnership_lead\n- spam → null (do not process)\n\nCHAIN OF THOUGHT (MANDATORY):\nBEFORE assigning a priority, analyze 3 dimensions:\n1. Urgency: time pressure (e.g. \"today\"), emotional escalation, repeated complaint\n2. Business impact: risk of losing the client/location reputation, impact on b2b pipeline\n3. Context: signs of a repeat customer, visit frequency, tone of the message\n\nRETURN JSON in this exact format (NO markdown wrapper):\n{\n  \"category\": \"booking|complaint|pricing_services|b2b_partnership|spam\",\n  \"priority\": \"P1|P2|P3|P4\",\n  \"owner\": \"booking_manager|complaint_lead|sales_lead|partnership_lead|null\",\n  \"sla_minutes\": 15|120|1440|2880,\n  \"reasoning\": \"3-sentence justification of the priority based on the 3 dimensions\",\n  \"summary\": \"1-sentence description of what the ticket is about\",\n  \"customer_sentiment\": \"positive|neutral|frustrated|angry\"\n}"
+        }
+      },
+      "id": "93c67182-a68d-4fec-9f83-5077bdb7d417",
+      "name": "AI Classifier (Chain of Thought)",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.6,
+      "position": [
+        -704,
+        544
+      ],
+      "notes": "Серце системи. Промпт включає: ролі, категорії, пріоритети, default owners, інструкцію Chain of Thought, формат JSON. Адаптуй категорії та SLA-хвилини під свій бізнес."
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "options": {
+          "responseFormat": "json_object",
+          "temperature": 0.2
+        }
+      },
+      "id": "51c52751-a92c-4703-9a68-6d35016d651c",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [
+        -640,
+        784
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "YOUR openAiApi CREDENTIAL"
+        }
+      },
+      "notes": "gpt-4o-mini — оптимум ціна/якість. Температура 0.2 для передбачуваності. response_format=json_object щоб модель не повертала markdown."
+    },
+    {
+      "parameters": {
+        "fields": {
+          "values": [
+            {
+              "name": "parsed",
+              "type": "objectValue",
+              "objectValue": "={{ JSON.parse($json.output) }}"
+            }
+          ]
+        },
+        "include": "none",
+        "options": {}
+      },
+      "id": "a2b84314-4d10-4a2e-9cd5-107ffff33a1e",
+      "name": "Flatten Result",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [
+        -352,
+        544
+      ],
+      "notes": "Збирає всі поля для логування та маршрутизації в один плоский об'єкт. SLA deadline розраховується = created_at + sla_minutes."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-not-spam",
+              "leftValue": "={{ $json.parsed.category }}",
+              "rightValue": "spam",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "3c1e7fc7-755d-4eef-bfa8-377e14456047",
+      "name": "Не спам?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -128,
+        544
+      ],
+      "notes": "Захист бюджету: спам не йде далі. Логуємо тільки осмислені тікети."
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes"
+            }
+          ]
+        }
+      },
+      "id": "cc33de7a-a0b0-4d23-88ce-d0c170316e62",
+      "name": "SLA Watcher (every 5m)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1152,
+        1072
+      ],
+      "notes": "Окремий тригер. Раз на 5 хвилин читає Sheets і шукає тікети, де поточний час > sla_deadline і status == open."
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Tickets"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "status",
+              "lookupValue": "open"
+            }
+          ]
+        },
+        "combineFilters": "AND",
+        "options": {}
+      },
+      "id": "1b6787b1-c9fc-40b8-86a7-b27f15f514af",
+      "name": "Read Open Tickets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        -928,
+        1072
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "YOUR googleSheetsOAuth2Api CREDENTIAL"
+        }
+      },
+      "notes": "Тільки open-тікети — закриті нас не цікавлять."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-sla-breached",
+              "leftValue": "={{ DateTime.fromISO($json.sla_deadline) < $now }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a648d2b7-997c-408d-9448-324ba6177821",
+      "name": "SLA Breached?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -704,
+        1072
+      ],
+      "notes": "Якщо deadline < now і тікет ще open — breach."
+    },
+    {
+      "parameters": {
+        "fields": {
+          "values": [
+            {
+              "name": "escalation_level",
+              "type": "numberValue",
+              "numberValue": "={{ (() => { const overdueMin = DateTime.now().diff(DateTime.fromISO($json.sla_deadline), 'minutes').minutes; if (overdueMin < 30) return 0; if (overdueMin < 60) return 1; return 2; })() }}"
+            },
+            {
+              "name": "minutes_overdue",
+              "type": "numberValue",
+              "numberValue": "={{ Math.round(DateTime.now().diff(DateTime.fromISO($json.sla_deadline), 'minutes').minutes) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b036286c-a981-4e3e-9ff2-8d2054123dde",
+      "name": "Compute Escalation Level",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [
+        -480,
+        1072
+      ],
+      "notes": "Рахуємо рівень ескалації:\n- Level 0: breach 0–30 хв → пінг власнику\n- Level 1: 30–60 хв → пінг тімліду\n- Level 2: 60+ хв → ескалація директору (email)"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "lvl0",
+                    "leftValue": "={{ $json.escalation_level }}",
+                    "rightValue": 0,
+                    "operator": {
+                      "type": "number",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Level 0 — Owner"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "lvl1",
+                    "leftValue": "={{ $json.escalation_level }}",
+                    "rightValue": 1,
+                    "operator": {
+                      "type": "number",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Level 1 — TL"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "lvl2",
+                    "leftValue": "={{ $json.escalation_level }}",
+                    "rightValue": 2,
+                    "operator": {
+                      "type": "number",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Level 2 — Director"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "247aac64-1b37-4b43-87be-b87953910dd1",
+      "name": "Switch by Level",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -256,
+        1056
+      ],
+      "notes": "Розгалуження на 3 виходи: Owner / Team Lead / Director."
+    },
+    {
+      "parameters": {
+        "sendTo": "director@company.example",
+        "subject": "=[ESCALATION L2] {{ $json.priority }} ticket — {{ $json.subject }}",
+        "message": "=<h2>Ескалація L2 — Director</h2>\n<p>Тікет <strong>{{ $json.priority }}</strong> прострочено на <strong>{{ $json.minutes_overdue }} хв</strong>. Власник {{ $json.owner }} і тімлід не зреагували.</p>\n<h3>Контекст</h3>\n<ul>\n<li><strong>Категорія:</strong> {{ $json.category }}</li>\n<li><strong>Sentiment:</strong> {{ $json.sentiment }}</li>\n<li><strong>Від:</strong> {{ $json.from_email }}</li>\n<li><strong>Створено:</strong> {{ $json.created_at }}</li>\n</ul>\n<h3>Резюме</h3>\n<p>{{ $json.summary }}</p>\n<h3>AI Reasoning</h3>\n<p><em>{{ $json.reasoning }}</em></p>\n<p><a href=\"{{ $json.thread_link }}\">→ Відкрити thread</a></p>",
+        "options": {}
+      },
+      "id": "3c64dde9-cf8d-4ad1-b5df-016af3f63506",
+      "name": "Email: Director (L2)",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -32,
+        1264
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "YOUR gmailOAuth2 CREDENTIAL"
+        }
+      },
+      "notes": "L2 — лист директору з повним таймлайном. Не пінг — інформація для управлінського рішення."
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Tickets"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "created_at": "={{ $('Collect Ticket Context').item.json.date }}",
+            "ticket_id": "={{ $now.toMillis() }}",
+            "from_email": "={{ $('Collect Ticket Context').item.json.from.value[0].address }}",
+            "subject": "={{ $('Collect Ticket Context').item.json.subject }}",
+            "category": "={{ $json.parsed.category }}",
+            "priority": "={{ $json.parsed.priority }}",
+            "owner": "={{ $json.parsed.owner }}",
+            "sla_deadline": "={{ DateTime.fromISO($('Collect Ticket Context').item.json.date).plus({ minutes: $json.parsed.sla_minutes }).toISO() }}",
+            "status": "open",
+            "sla_minutes": "={{ $json.parsed.sla_minutes }}",
+            "summary": "={{ $json.parsed.summary }}",
+            "reasoning": "={{ $json.parsed.reasoning }}",
+            "sentiment": "={{ $json.parsed.customer_sentiment }}",
+            "thread_link": "NA"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "ticket_id",
+              "displayName": "ticket_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "from_email",
+              "displayName": "from_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "subject",
+              "displayName": "subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "priority",
+              "displayName": "priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "owner",
+              "displayName": "owner",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "sla_minutes",
+              "displayName": "sla_minutes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "sla_deadline",
+              "displayName": "sla_deadline",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "summary",
+              "displayName": "summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "reasoning",
+              "displayName": "reasoning",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "sentiment",
+              "displayName": "sentiment",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "thread_link",
+              "displayName": "thread_link",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "c03e1edc-113f-4113-80eb-0398177311c3",
+      "name": "Log → Tickets Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        96,
+        448
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "YOUR googleSheetsOAuth2Api CREDENTIAL"
+        }
+      },
+      "notes": "Логуємо ВСІ не-спам тікети у Sheets. Це база, на якій працює і дашборд, і SLA-watcher, і Root Cause Analysis. Не економте на полях — повна історія коштує копійок."
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "=🚨 <b>Новий тікет — {{ $json.parsed.priority }}</b>\n\n<b>Власник:</b> {{ $json.parsed.owner }}\n<b>Категорія:</b> {{ $json.parsed.category }}\n<b>SLA:</b> {{ $json.parsed.sla_minutes }} хв (до {{ DateTime.fromISO($('Collect Ticket Context').item.json.date).plus({ minutes: $json.parsed.sla_minutes }).toISO() }})\n<b>Sentiment:</b> {{ $json.parsed.customer_sentiment }}\n\n<b>Тема:</b> {{ $('Collect Ticket Context').item.json.subject }}\n<b>Від:</b> {{ $('Collect Ticket Context').item.json.from.value[0].address }}\n\n<b>Що сталось:</b> {{ $json.parsed.summary }}\n\n<b>Чому такий пріоритет:</b>\n{{ $json.parsed.reasoning }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        96,
+        640
+      ],
+      "id": "1e3a00f4-89e7-4a7b-a9c7-5461b354de3b",
+      "name": "Send a text message TO MANAGER",
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "YOUR telegramApi CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "=⏰ <b>SLA PROSTROCHENO (L0)</b>\n\n<b>Тікет:</b> {{ $json.category }} — {{ $json.priority }}\n<b>Власник:</b> {{ $json.owner }}\n<b>Дедлайн був:</b> {{ $json.sla_deadline }}\n\nБудь ласка, зверни увагу — SLA прострочено.",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -32,
+        880
+      ],
+      "id": "45fd04ec-f777-419a-b025-a1bb14ddc5b8",
+      "name": "Remind Owner (L0)",
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "YOUR telegramApi CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TEAM_LEAD_GROUP_CHAT_ID",
+        "text": "=🔴 <b>ЕСКАЛАЦІЯ L1 — SLA PROSTROCHENO &gt;30 ХВ</b>\n\n<b>Тікет:</b> {{ $json.category }} — {{ $json.priority }}\n<b>Власник (не відповів):</b> {{ $json.owner }}\n<b>Дедлайн був:</b> {{ $json.sla_deadline }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -32,
+        1072
+      ],
+      "id": "92039b20-d470-4b04-bda5-cc27d4bf54ac",
+      "name": "Notify TL (L1)",
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "YOUR telegramApi CREDENTIAL"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Gmail Trigger (every 1m)": {
+      "main": [
+        [
+          {
+            "node": "Collect Ticket Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Ticket Context": {
+      "main": [
+        [
+          {
+            "node": "AI Classifier (Chain of Thought)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Classifier (Chain of Thought)": {
+      "main": [
+        [
+          {
+            "node": "Flatten Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Classifier (Chain of Thought)",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flatten Result": {
+      "main": [
+        [
+          {
+            "node": "Не спам?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Не спам?": {
+      "main": [
+        [
+          {
+            "node": "Log → Tickets Sheet",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send a text message TO MANAGER",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SLA Watcher (every 5m)": {
+      "main": [
+        [
+          {
+            "node": "Read Open Tickets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Open Tickets": {
+      "main": [
+        [
+          {
+            "node": "SLA Breached?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SLA Breached?": {
+      "main": [
+        [
+          {
+            "node": "Compute Escalation Level",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Escalation Level": {
+      "main": [
+        [
+          {
+            "node": "Switch by Level",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch by Level": {
+      "main": [
+        [
+          {
+            "node": "Remind Owner (L0)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify TL (L1)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Email: Director (L2)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "nodeGroups": [],
+  "tags": []
+}
