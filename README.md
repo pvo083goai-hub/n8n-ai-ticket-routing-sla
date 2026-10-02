@@ -6,7 +6,7 @@ Critical customer complaints escalated within 5 minutes - every email classified
 
 > Training project (GoIT AI Automator) based on a realistic scenario.
 
-![n8n workflow](screenshots/workflow.png)
+![n8n workflow](workflow.png)
 
 ## Problem
 
